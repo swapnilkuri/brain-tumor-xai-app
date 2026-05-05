@@ -88,11 +88,14 @@ def predict(model, tensor):
 # ---------------- TARGET LAYER ----------------
 def get_target_layer(model, name):
     if name == "densenet121":
-        return model.features[-1]
+        return model.features.denseblock4
+
     elif name == "resnet50":
-        return model.layer4[-1]
+        return model.layer4
+
     elif name == "efficientnet_b0":
-        return model.features[-1]
+        return model.features[-1][0]
+
     elif name == "mobilenet_v2":
         return model.features[-1]
 
@@ -102,17 +105,19 @@ def grad_cam(model, img_tensor, model_name):
     model.eval()
     target_layer = get_target_layer(model, model_name)
 
-    activations = []
-    gradients = []
+    activations = None
+    gradients = None
 
     def forward_hook(module, input, output):
-        activations.append(output)
+        nonlocal activations
+        activations = output
 
     def backward_hook(module, grad_input, grad_output):
-        gradients.append(grad_output[0])
+        nonlocal gradients
+        gradients = grad_output[0]
 
-    h1 = target_layer.register_forward_hook(forward_hook)
-    h2 = target_layer.register_full_backward_hook(backward_hook)
+    handle_f = target_layer.register_forward_hook(forward_hook)
+    handle_b = target_layer.register_full_backward_hook(backward_hook)
 
     try:
         output = model(img_tensor)
@@ -121,11 +126,11 @@ def grad_cam(model, img_tensor, model_name):
         model.zero_grad()
         output[0, class_idx].backward()
 
-        if len(activations) == 0 or len(gradients) == 0:
+        if activations is None or gradients is None:
             return None
 
-        acts = activations[0].detach().cpu().numpy()[0]
-        grads = gradients[0].detach().cpu().numpy()[0]
+        acts = activations.detach().cpu().numpy()[0]
+        grads = gradients.detach().cpu().numpy()[0]
 
         weights = np.mean(grads, axis=(1, 2))
         cam = np.sum(weights[:, None, None] * acts, axis=0)
@@ -142,8 +147,8 @@ def grad_cam(model, img_tensor, model_name):
         return None
 
     finally:
-        h1.remove()
-        h2.remove()
+        handle_f.remove()
+        handle_b.remove()
 
 # ---------------- UI ----------------
 st.title("Brain Tumor Classification with Explainability")
