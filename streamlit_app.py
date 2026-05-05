@@ -165,13 +165,24 @@ if img_file:
         st.subheader(f"{ui_name}: {pred}")
         st.write(f"Confidence: {conf:.4f}")
 
-        # -------- SMALL GRAPH --------
-        fig, ax = plt.subplots(figsize=(4,2))
-        ax.bar(CLASS_NAMES, probs)
-        ax.set_ylim(0,1)
-        ax.set_title("Confidence")
-        st.pyplot(fig)
-        plt.close(fig)
+   # -------- FIXED SMALL GRAPH --------
+fig, ax = plt.subplots(figsize=(4, 2))   # smaller figure
+
+ax.bar(CLASS_NAMES, probs)
+ax.set_ylim(0, 1)
+ax.set_title("Confidence", fontsize=10)
+
+# make labels smaller
+ax.tick_params(axis='x', labelsize=8)
+ax.tick_params(axis='y', labelsize=8)
+
+# tighten layout
+plt.tight_layout()
+
+# IMPORTANT: disable full width
+st.pyplot(fig, use_container_width=False)
+
+plt.close(fig)
 
         # -------- GRAD CAM --------
         cam = grad_cam(model, tensor.clone())
