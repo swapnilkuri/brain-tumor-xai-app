@@ -60,11 +60,14 @@ def get_model(name):
 
 @st.cache_resource
 def load_model(name):
-    path = download_model(name)
-    model = get_model(name)
-    model.load_state_dict(torch.load(path, map_location="cpu"))
-    model.eval()
-    return model
+    try:
+        path = download_model(name)
+        model = get_model(name)
+        model.load_state_dict(torch.load(path, map_location="cpu"))
+        model.eval()
+        return model
+    except:
+        return None
 
 # ---------------- PREPROCESS ----------------
 def preprocess(image):
@@ -156,7 +159,13 @@ if img_file:
     tensor = preprocess(image)
 
     def run(ui_name, name):
+
         model = load_model(name)
+
+        if model is None:
+            st.error(f"Model failed to load: {name}")
+            return
+
         probs = predict(model, tensor)
 
         pred = CLASS_NAMES[np.argmax(probs)]
@@ -165,40 +174,38 @@ if img_file:
         st.subheader(f"{ui_name}: {pred}")
         st.write(f"Confidence: {conf:.4f}")
 
-   # -------- FIXED SMALL GRAPH --------
-fig, ax = plt.subplots(figsize=(4, 2))   # smaller figure
+        # -------- SMALL GRAPH --------
+        fig, ax = plt.subplots(figsize=(4, 2))
 
-ax.bar(CLASS_NAMES, probs)
-ax.set_ylim(0, 1)
-ax.set_title("Confidence", fontsize=10)
+        ax.bar(CLASS_NAMES, probs)
+        ax.set_ylim(0, 1)
+        ax.set_title("Confidence", fontsize=10)
 
-# make labels smaller
-ax.tick_params(axis='x', labelsize=8)
-ax.tick_params(axis='y', labelsize=8)
+        ax.tick_params(axis='x', labelsize=8)
+        ax.tick_params(axis='y', labelsize=8)
 
-# tighten layout
-plt.tight_layout()
+        plt.tight_layout()
 
-# IMPORTANT: disable full width
-st.pyplot(fig, use_container_width=False)
-
-plt.close(fig)
+        st.pyplot(fig, use_container_width=False)
+        plt.close(fig)
 
         # -------- GRAD CAM --------
         cam = grad_cam(model, tensor.clone())
 
         if cam is not None:
-            heatmap = cv2.applyColorMap(np.uint8(255*cam), cv2.COLORMAP_JET)
+            heatmap = cv2.applyColorMap(np.uint8(255 * cam), cv2.COLORMAP_JET)
+
             overlay = cv2.addWeighted(
-                np.array(image.resize((224,224))),
+                np.array(image.resize((224, 224))),
                 0.7,
                 heatmap,
                 0.3,
                 0
             )
+
             st.image(overlay, caption="Grad-CAM")
         else:
-            st.warning("Grad-CAM not available for this model")
+            st.warning("Grad-CAM not available")
 
     if mode == "Single Model":
         run(selected, MODEL_NAME_MAP[selected])
