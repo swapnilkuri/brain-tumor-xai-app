@@ -3,6 +3,6 @@ torch
 torchvision
 numpy
 opencv-python-headless
-Pillow
-gdown
+pillow
 matplotlib
+gdown
