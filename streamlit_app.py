@@ -74,10 +74,7 @@ def preprocess(image):
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
-        transforms.Normalize(
-            [0.485, 0.456, 0.406],
-            [0.229, 0.224, 0.225]
-        )
+        transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
     ])
     return transform(image).unsqueeze(0)
 
@@ -88,33 +85,38 @@ def predict(model, tensor):
         probs = F.softmax(out, dim=1).cpu().numpy()[0]
     return probs
 
-# ---------------- SAFE GRAD-CAM ----------------
-def grad_cam(model, img_tensor):
+# ---------------- TARGET LAYER ----------------
+def get_target_layer(model, name):
+    if name == "densenet121":
+        return model.features[-1]
+    elif name == "resnet50":
+        return model.layer4[-1]
+    elif name == "efficientnet_b0":
+        return model.features[-1]
+    elif name == "mobilenet_v2":
+        return model.features[-1]
+
+# ---------------- GRAD CAM ----------------
+def grad_cam(model, img_tensor, model_name):
+
+    model.eval()
+    target_layer = get_target_layer(model, model_name)
 
     activations = []
     gradients = []
 
-    def f_hook(m, i, o):
-        activations.append(o.detach())
+    def forward_hook(module, input, output):
+        activations.append(output)
 
-    def b_hook(m, gi, go):
-        gradients.append(go[0].detach())
+    def backward_hook(module, grad_input, grad_output):
+        gradients.append(grad_output[0])
 
-    target_layer = None
-    for m in reversed(list(model.modules())):
-        if isinstance(m, torch.nn.Conv2d):
-            target_layer = m
-            break
-
-    if target_layer is None:
-        return None
-
-    h1 = target_layer.register_forward_hook(f_hook)
-    h2 = target_layer.register_backward_hook(b_hook)
+    h1 = target_layer.register_forward_hook(forward_hook)
+    h2 = target_layer.register_full_backward_hook(backward_hook)
 
     try:
         output = model(img_tensor)
-        class_idx = output.argmax()
+        class_idx = output.argmax(dim=1)
 
         model.zero_grad()
         output[0, class_idx].backward()
@@ -122,18 +124,17 @@ def grad_cam(model, img_tensor):
         if len(activations) == 0 or len(gradients) == 0:
             return None
 
-        acts = activations[0][0].cpu().numpy()
-        grads = gradients[0][0].cpu().numpy()
+        acts = activations[0].detach().cpu().numpy()[0]
+        grads = gradients[0].detach().cpu().numpy()[0]
 
         weights = np.mean(grads, axis=(1, 2))
-        cam = np.zeros(acts.shape[1:], dtype=np.float32)
-
-        for i, w in enumerate(weights):
-            cam += w * acts[i]
+        cam = np.sum(weights[:, None, None] * acts, axis=0)
 
         cam = np.maximum(cam, 0)
         cam = cv2.resize(cam, (224, 224))
-        cam = (cam - cam.min()) / (cam.max() + 1e-8)
+
+        cam = cam - cam.min()
+        cam = cam / (cam.max() + 1e-8)
 
         return cam
 
@@ -163,11 +164,10 @@ if img_file:
         model = load_model(name)
 
         if model is None:
-            st.error(f"Model failed to load: {name}")
+            st.error(f"Model failed: {name}")
             return
 
         probs = predict(model, tensor)
-
         pred = CLASS_NAMES[np.argmax(probs)]
         conf = np.max(probs)
 
@@ -175,28 +175,25 @@ if img_file:
         st.write(f"Confidence: {conf:.4f}")
 
         # -------- SMALL GRAPH --------
-        fig, ax = plt.subplots(figsize=(4, 2))
-
+        fig, ax = plt.subplots(figsize=(3,1.8))
         ax.bar(CLASS_NAMES, probs)
-        ax.set_ylim(0, 1)
-        ax.set_title("Confidence", fontsize=10)
-
-        ax.tick_params(axis='x', labelsize=8)
-        ax.tick_params(axis='y', labelsize=8)
+        ax.set_ylim(0,1)
+        ax.set_title("Confidence", fontsize=9)
+        ax.tick_params(axis='x', labelsize=7)
+        ax.tick_params(axis='y', labelsize=7)
 
         plt.tight_layout()
-
-        st.pyplot(fig, use_container_width=False)
+        st.pyplot(fig)
         plt.close(fig)
 
         # -------- GRAD CAM --------
-        cam = grad_cam(model, tensor.clone())
+        cam = grad_cam(model, tensor.clone(), name)
 
         if cam is not None:
-            heatmap = cv2.applyColorMap(np.uint8(255 * cam), cv2.COLORMAP_JET)
+            heatmap = cv2.applyColorMap(np.uint8(255*cam), cv2.COLORMAP_JET)
 
             overlay = cv2.addWeighted(
-                np.array(image.resize((224, 224))),
+                np.array(image.resize((224,224))),
                 0.7,
                 heatmap,
                 0.3,
@@ -205,13 +202,12 @@ if img_file:
 
             st.image(overlay, caption="Grad-CAM")
         else:
-            st.warning("Grad-CAM not available")
+            st.warning("Grad-CAM failed")
 
     if mode == "Single Model":
         run(selected, MODEL_NAME_MAP[selected])
-
     else:
         cols = st.columns(4)
-        for i, (ui, name) in enumerate(MODEL_NAME_MAP.items()):
+        for i,(ui,name) in enumerate(MODEL_NAME_MAP.items()):
             with cols[i]:
                 run(ui, name)
