@@ -1,111 +1,100 @@
 import streamlit as st
 import torch
-import torch.nn.functional as F
-import torchvision.transforms as transforms
+import torch.nn as nn
 import torchvision.models as models
+import torchvision.transforms as transforms
 import numpy as np
 import cv2
 from PIL import Image
 import matplotlib.pyplot as plt
-import gdown
 import os
 
-# -------------------------
-# CONFIG
-# -------------------------
-st.set_page_config(page_title="Brain Tumor Classifier", layout="wide")
+# ================= CONFIG =================
+CLASS_NAMES = ['glioma', 'meningioma', 'pituitary']
+DEVICE = torch.device("cpu")
 
-CLASS_NAMES = ["glioma", "meningioma", "pituitary"]
-
-MODEL_NAME_MAP = {
-    "DenseNet121": "densenet121",
-    "ResNet50": "resnet50",
-    "EfficientNet-B0": "efficientnet_b0",
-    "MobileNetV2": "mobilenet_v2"
-}
-
-MODEL_URLS = {
-    "densenet121": "https://drive.google.com/uc?id=12ASdxYOzN8IsHyAu2tfjETCsLFo-vNDz",
-    "resnet50": "https://drive.google.com/uc?id=1Enuecoe_TCrZJ3EUZVEGfwDohg8GqIMG",
-    "efficientnet_b0": "https://drive.google.com/uc?id=1iLPjoDgegFYLgxw6B3cD6Vnfd_iQdX07",
-    "mobilenet_v2": "https://drive.google.com/uc?id=1Em7OfSqZbpdjceVRtNG-Cn4kBvsdynT9"
-}
-
-os.makedirs("models", exist_ok=True)
-
-# -------------------------
-# DOWNLOAD MODEL
-# -------------------------
-def download_model(name):
-    path = f"models/{name}.pth"
-    if not os.path.exists(path):
-        gdown.download(MODEL_URLS[name], path, quiet=False)
-    return path
-
-# -------------------------
-# MODEL FACTORY
-# -------------------------
+# ================= MODEL FACTORY =================
 def get_model(name):
-    if name == "densenet121":
+    if name == "DenseNet121":
         model = models.densenet121(pretrained=False)
-        model.classifier = torch.nn.Linear(model.classifier.in_features, 3)
+        model.classifier = nn.Linear(model.classifier.in_features, 3)
 
-    elif name == "resnet50":
+    elif name == "ResNet50":
         model = models.resnet50(pretrained=False)
-        model.fc = torch.nn.Linear(model.fc.in_features, 3)
+        model.fc = nn.Linear(model.fc.in_features, 3)
 
-    elif name == "efficientnet_b0":
+    elif name == "EfficientNet-B0":
         model = models.efficientnet_b0(pretrained=False)
-        model.classifier[1] = torch.nn.Linear(model.classifier[1].in_features, 3)
+        model.classifier[1] = nn.Linear(model.classifier[1].in_features, 3)
 
-    elif name == "mobilenet_v2":
+    elif name == "MobileNetV2":
         model = models.mobilenet_v2(pretrained=False)
-        model.classifier[1] = torch.nn.Linear(model.classifier[1].in_features, 3)
+        model.classifier[1] = nn.Linear(model.classifier[1].in_features, 3)
 
     else:
         raise ValueError(f"Unknown model: {name}")
 
     return model
 
-# -------------------------
-# LOAD MODEL
-# -------------------------
+
+# ================= LOAD MODEL =================
 @st.cache_resource
 def load_model(name):
-    path = download_model(name)
     model = get_model(name)
 
-    state_dict = torch.load(path, map_location="cpu")
+    path_map = {
+        "DenseNet121": "models/densenet121.pth",
+        "ResNet50": "models/resnet50.pth",
+        "EfficientNet-B0": "models/efficientnetb0.pth",
+        "MobileNetV2": "models/mobilenetv2.pth"
+    }
+
+    path = path_map[name]
+
+    if not os.path.exists(path):
+        st.error(f"Model file missing: {path}")
+        return None
+
+    state_dict = torch.load(path, map_location=DEVICE)
     model.load_state_dict(state_dict)
 
     model.eval()
     return model
 
-# -------------------------
-# IMAGE PREPROCESS
-# -------------------------
+
+# ================= PREPROCESS =================
 def preprocess(image):
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
-        transforms.ToTensor()
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
     ])
     return transform(image).unsqueeze(0)
 
-# -------------------------
-# PREDICTION
-# -------------------------
-def predict(model, tensor):
-    with torch.no_grad():
-        output = model(tensor)
-        probs = F.softmax(output, dim=1).numpy()[0]
-    return probs
 
-# -------------------------
-# GRAD-CAM (SAFE VERSION)
-# -------------------------
+# ================= GRAD-CAM =================
 def grad_cam(model, img_tensor):
 
-    img_tensor.requires_grad = True
+    activations = []
+    gradients = []
+
+    def forward_hook(module, input, output):
+        activations.append(output)
+
+    def backward_hook(module, grad_in, grad_out):
+        gradients.append(grad_out[0])
+
+    target_layer = None
+    for m in reversed(list(model.modules())):
+        if isinstance(m, nn.Conv2d):
+            target_layer = m
+            break
+
+    handle_f = target_layer.register_forward_hook(forward_hook)
+    handle_b = target_layer.register_backward_hook(backward_hook)
 
     output = model(img_tensor)
     class_idx = output.argmax()
@@ -113,71 +102,85 @@ def grad_cam(model, img_tensor):
     model.zero_grad()
     output[0, class_idx].backward()
 
-    gradients = img_tensor.grad[0].cpu().numpy()
-    cam = np.mean(gradients, axis=0)
+    grads = gradients[0].cpu().data.numpy()[0]
+    acts = activations[0].cpu().data.numpy()[0]
+
+    weights = np.mean(grads, axis=(1, 2))
+    cam = np.zeros(acts.shape[1:], dtype=np.float32)
+
+    for i, w in enumerate(weights):
+        cam += w * acts[i]
 
     cam = np.maximum(cam, 0)
     cam = cv2.resize(cam, (224, 224))
     cam = cam - cam.min()
     cam = cam / (cam.max() + 1e-8)
 
+    handle_f.remove()
+    handle_b.remove()
+
     return cam
 
-# -------------------------
-# UI
-# -------------------------
+
+# ================= UI =================
 st.title("Brain Tumor Classification with Explainability")
 
-uploaded = st.file_uploader("Upload MRI Image", type=["jpg", "png"])
+uploaded_file = st.file_uploader("Upload MRI Image", type=["jpg", "png", "jpeg"])
 
 mode = st.radio("Mode", ["Single Model", "Compare All Models"])
 
-selected_model = st.selectbox("Select Model", list(MODEL_NAME_MAP.keys()))
+MODEL_LIST = ["DenseNet121", "ResNet50", "EfficientNet-B0", "MobileNetV2"]
 
-if uploaded:
-    image = Image.open(uploaded).convert("RGB")
-    st.image(image, caption="Input MRI", width=300)
+if uploaded_file:
 
-    tensor = preprocess(image)
+    image = Image.open(uploaded_file).convert("RGB")
+    st.image(image, caption="Input MRI", width=200)
 
-    if mode == "Single Model":
-        name = MODEL_NAME_MAP[selected_model]
-        model = load_model(name)
+    img_tensor = preprocess(image)
 
-        probs = predict(model, tensor)
+    def run_model(model_name):
+        model = load_model(model_name)
+        if model is None:
+            return
+
+        with torch.no_grad():
+            output = model(img_tensor)
+            probs = torch.softmax(output, dim=1)[0].numpy()
+
         pred_class = CLASS_NAMES[np.argmax(probs)]
+        confidence = np.max(probs)
 
-        st.subheader(f"{selected_model} Prediction: {pred_class}")
-        st.write(f"Confidence: {np.max(probs):.4f}")
+        st.subheader(f"{model_name} Prediction: {pred_class}")
+        st.write(f"Confidence: {confidence:.4f}")
 
-        # chart
-        fig, ax = plt.subplots()
+        # ===== FIXED SMALL GRAPH =====
+        fig, ax = plt.subplots(figsize=(5, 3))
         ax.bar(CLASS_NAMES, probs)
-        ax.set_title("Confidence Distribution")
+        ax.set_ylim(0, 1)
+        ax.set_title("Confidence")
         st.pyplot(fig)
+        plt.close(fig)
 
-        # grad cam
-        cam = grad_cam(model, tensor.clone())
+        # ===== GRAD-CAM =====
+        cam = grad_cam(model, img_tensor)
         heatmap = cv2.applyColorMap(np.uint8(255 * cam), cv2.COLORMAP_JET)
-        overlay = cv2.addWeighted(np.array(image.resize((224,224))), 0.6, heatmap, 0.4, 0)
+
+        overlay = cv2.addWeighted(
+            np.array(image.resize((224, 224))),
+            0.7,
+            heatmap,
+            0.3,
+            0
+        )
 
         st.image(overlay, caption="Grad-CAM")
 
+    if mode == "Single Model":
+        selected_model = st.selectbox("Select Model", MODEL_LIST)
+        run_model(selected_model)
+
     else:
         cols = st.columns(4)
-
-        for i, (ui_name, name) in enumerate(MODEL_NAME_MAP.items()):
-            model = load_model(name)
-            probs = predict(model, tensor)
-
-            pred_class = CLASS_NAMES[np.argmax(probs)]
-            cam = grad_cam(model, tensor.clone())
-
-            heatmap = cv2.applyColorMap(np.uint8(255 * cam), cv2.COLORMAP_JET)
-            overlay = cv2.addWeighted(np.array(image.resize((224,224))), 0.6, heatmap, 0.4, 0)
-
+        for i, m in enumerate(MODEL_LIST):
             with cols[i]:
-                st.markdown(f"### {ui_name}")
-                st.write(pred_class)
-                st.write(f"{np.max(probs):.3f}")
-                st.image(overlay)
+                run_model(m)
