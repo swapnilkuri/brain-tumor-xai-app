@@ -408,105 +408,105 @@ if uploaded_file:
                 f"XAI failed: {e}"
             )
 
-    # ==================================================
-    # COMPARE ALL MODELS
-    # ==================================================
-    else:
+   # ==================================================
+# COMPARE ALL MODELS
+# ==================================================
+else:
 
-        cols = st.columns(
-            len(MODEL_NAME_MAP)
-        )
+    model_names = list(MODEL_NAME_MAP.keys())
 
-        for i, name in enumerate(
-            MODEL_NAME_MAP.keys()
-        ):
+    cols = st.columns(2)
 
-            model = load_model(name)
+    for idx, name in enumerate(model_names):
 
-            with torch.no_grad():
+        col = cols[idx % 2]
 
-                out = model(img_tensor)
+        model = load_model(name)
 
-                probs = torch.softmax(
-                    out,
-                    dim=1
-                ).cpu().numpy()[0]
+        with torch.no_grad():
 
-            pred = CLASS_NAMES[np.argmax(probs)]
+            out = model(img_tensor)
 
-            with cols[i]:
+            probs = torch.softmax(
+                out,
+                dim=1
+            ).cpu().numpy()[0]
 
-                st.markdown(f"### {name}")
+        pred = CLASS_NAMES[np.argmax(probs)]
 
-                st.write(pred)
+        with col:
 
-                st.write(
-                    f"Confidence: {np.max(probs):.4f}"
+            st.markdown(f"## {name}")
+
+            st.write(pred)
+
+            st.write(
+                f"Confidence: {np.max(probs):.4f}"
+            )
+
+            show_confidence_graph(probs)
+
+            try:
+
+                # ======================
+                # GRAD-CAM
+                # ======================
+                cam1 = generate_gradcam(
+                    model,
+                    img_tensor,
+                    MODEL_NAME_MAP[name]
                 )
 
-                show_confidence_graph(probs)
+                overlay1 = overlay_heatmap(
+                    image,
+                    cam1
+                )
 
-                try:
+                st.image(
+                    overlay1,
+                    caption="Grad-CAM"
+                )
 
-                    # ======================
-                    # GRAD-CAM
-                    # ======================
-                    cam1 = generate_gradcam(
-                        model,
-                        img_tensor,
-                        MODEL_NAME_MAP[name]
-                    )
+                # ======================
+                # GRAD-CAM++
+                # ======================
+                cam2 = generate_gradcam_pp(
+                    model,
+                    img_tensor,
+                    MODEL_NAME_MAP[name]
+                )
 
-                    overlay1 = overlay_heatmap(
-                        image,
-                        cam1
-                    )
+                overlay2 = overlay_heatmap(
+                    image,
+                    cam2
+                )
 
-                    st.image(
-                        overlay1,
-                        caption="Grad-CAM"
-                    )
+                st.image(
+                    overlay2,
+                    caption="Grad-CAM++"
+                )
 
-                    # ======================
-                    # GRAD-CAM++
-                    # ======================
-                    cam2 = generate_gradcam_pp(
-                        model,
-                        img_tensor,
-                        MODEL_NAME_MAP[name]
-                    )
+                # ======================
+                # SCORE-CAM
+                # ======================
+                cam3 = generate_scorecam(
+                    model,
+                    img_tensor,
+                    MODEL_NAME_MAP[name]
+                )
 
-                    overlay2 = overlay_heatmap(
-                        image,
-                        cam2
-                    )
+                overlay3 = overlay_heatmap(
+                    image,
+                    cam3
+                )
 
-                    st.image(
-                        overlay2,
-                        caption="Grad-CAM++"
-                    )
+                st.image(
+                    overlay3,
+                    caption="Score-CAM"
+                )
 
-                    # ======================
-                    # SCORE-CAM
-                    # ======================
-                    cam3 = generate_scorecam(
-                        model,
-                        img_tensor,
-                        MODEL_NAME_MAP[name]
-                    )
+            except Exception as e:
 
-                    overlay3 = overlay_heatmap(
-                        image,
-                        cam3
-                    )
-
-                    st.image(
-                        overlay3,
-                        caption="Score-CAM"
-                    )
-
-                except Exception as e:
-
-                    st.warning(
-                        f"XAI failed: {e}"
-                    )
+                st.warning(
+                    f"XAI failed: {e}"
+                )
