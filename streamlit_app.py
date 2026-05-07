@@ -436,8 +436,7 @@ if uploaded_file:
             st.warning(
                 f"XAI failed: {e}"
             )
-
-   # ==================================================
+# ==================================================
 # COMPARE ALL MODELS
 # ==================================================
 else:
@@ -450,15 +449,14 @@ else:
 
         col = cols[idx % 2]
 
-       model = load_model(name)
+        model = load_model(name)
 
-if model is None:
+        if model is None:
+            continue
 
-    continue
+        with torch.no_grad():
 
-with torch.no_grad():
-
-    out = model(img_tensor)
+            out = model(img_tensor)
 
             probs = torch.softmax(
                 out,
