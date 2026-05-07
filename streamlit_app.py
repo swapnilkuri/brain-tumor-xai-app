@@ -332,6 +332,7 @@ mode = st.radio(
 if uploaded_file:
 
     image = Image.open(uploaded_file).convert("RGB")
+    img_tensor = transform(image).unsqueeze(0).to(DEVICE)
 
     st.image(
         image,
@@ -339,7 +340,7 @@ if uploaded_file:
         width=180
     )
 
-    img_tensor = transform(image).unsqueeze(0).to(DEVICE)
+   
 
     # ==================================================
     # SINGLE MODEL
