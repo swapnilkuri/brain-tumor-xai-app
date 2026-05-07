@@ -420,18 +420,16 @@ if uploaded_file:
 
             st.warning(f"XAI failed: {e}")
 
-    # ==================================================
+       # ==================================================
     # COMPARE ALL MODELS
     # ==================================================
     else:
 
         model_names = list(MODEL_NAME_MAP.keys())
 
-        cols = st.columns(2)
+        cols = st.columns(len(model_names))
 
         for idx, name in enumerate(model_names):
-
-            col = cols[idx % 2]
 
             model = load_model(name)
 
@@ -449,7 +447,7 @@ if uploaded_file:
 
             pred = CLASS_NAMES[np.argmax(probs)]
 
-            with col:
+            with cols[idx]:
 
                 st.markdown(f"## {name}")
 
@@ -463,39 +461,57 @@ if uploaded_file:
 
                 try:
 
+                    # ======================
+                    # GRAD-CAM
+                    # ======================
                     cam1 = generate_gradcam(
                         model,
                         img_tensor,
                         MODEL_NAME_MAP[name]
                     )
 
-                    overlay1 = overlay_heatmap(image, cam1)
+                    overlay1 = overlay_heatmap(
+                        image,
+                        cam1
+                    )
 
                     st.image(
                         overlay1,
                         caption="Grad-CAM"
                     )
 
+                    # ======================
+                    # GRAD-CAM++
+                    # ======================
                     cam2 = generate_gradcam_pp(
                         model,
                         img_tensor,
                         MODEL_NAME_MAP[name]
                     )
 
-                    overlay2 = overlay_heatmap(image, cam2)
+                    overlay2 = overlay_heatmap(
+                        image,
+                        cam2
+                    )
 
                     st.image(
                         overlay2,
                         caption="Grad-CAM++"
                     )
 
+                    # ======================
+                    # SCORE-CAM
+                    # ======================
                     cam3 = generate_scorecam(
                         model,
                         img_tensor,
                         MODEL_NAME_MAP[name]
                     )
 
-                    overlay3 = overlay_heatmap(image, cam3)
+                    overlay3 = overlay_heatmap(
+                        image,
+                        cam3
+                    )
 
                     st.image(
                         overlay3,
@@ -504,4 +520,6 @@ if uploaded_file:
 
                 except Exception as e:
 
-                    st.warning(f"XAI failed: {e}")
+                    st.warning(
+                        f"XAI failed: {e}"
+                    )
