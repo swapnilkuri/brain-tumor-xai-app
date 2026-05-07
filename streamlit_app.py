@@ -100,27 +100,56 @@ def load_model_from_url(url, filename):
 @st.cache_resource
 def load_model(name):
 
-    model_name = MODEL_NAME_MAP[name]
+    try:
 
-    model = get_model(
-        model_name,
-        3,
-        pretrained=False
-    )
+        model_name = MODEL_NAME_MAP[name]
 
-    url, file = MODEL_PATHS[name]
+        model = get_model(
+            model_name,
+            3,
+            pretrained=False
+        )
 
-    state_dict = load_model_from_url(url, file)
+        url, file = MODEL_PATHS[name]
 
-    model.load_state_dict(state_dict)
+        # Download if missing
+        if not os.path.exists(file):
 
-    remove_inplace_relu(model)
+            gdown.download(
+                url,
+                file,
+                quiet=False
+            )
 
-    model.to(DEVICE)
+        # Load checkpoint safely
+        checkpoint = torch.load(
+            file,
+            map_location=DEVICE
+        )
 
-    model.eval()
+        # Handle state_dict wrapper
+        if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
 
-    return model
+            checkpoint = checkpoint["state_dict"]
+
+        model.load_state_dict(
+            checkpoint,
+            strict=False
+        )
+
+        remove_inplace_relu(model)
+
+        model.to(DEVICE)
+
+        model.eval()
+
+        return model
+
+    except Exception as e:
+
+        st.error(f"Failed loading {name}: {e}")
+
+        return None
 
 # ======================
 # TARGET LAYER
@@ -421,11 +450,15 @@ else:
 
         col = cols[idx % 2]
 
-        model = load_model(name)
+       model = load_model(name)
 
-        with torch.no_grad():
+if model is None:
 
-            out = model(img_tensor)
+    continue
+
+with torch.no_grad():
+
+    out = model(img_tensor)
 
             probs = torch.softmax(
                 out,
