@@ -92,7 +92,10 @@ def load_model(name):
 # ======================
 def get_target_layer(model, name):
 
-    if name == "densenet121":
+    if name == "convnext_tiny":
+        return model.features[-1]
+
+    elif name == "densenet121":
         return model.features[-1]
 
     elif name == "resnet50":
@@ -104,8 +107,7 @@ def get_target_layer(model, name):
     elif name == "mobilenet_v2":
         return model.features[-1]
 
-    elif name == "convnext_tiny":
-        return model.features[-1][-1]
+    
 
 # ======================
 # GRAD-CAM
