@@ -419,17 +419,19 @@ if uploaded_file:
         except Exception as e:
 
             st.warning(f"XAI failed: {e}")
-
-       # ==================================================
+    # ==================================================
     # COMPARE ALL MODELS
     # ==================================================
     else:
 
         model_names = list(MODEL_NAME_MAP.keys())
 
-        cols = st.columns(len(model_names))
+        # 2-column responsive layout
+        cols = st.columns(2)
 
         for idx, name in enumerate(model_names):
+
+            col = cols[idx % 2]
 
             model = load_model(name)
 
@@ -447,7 +449,7 @@ if uploaded_file:
 
             pred = CLASS_NAMES[np.argmax(probs)]
 
-            with cols[idx]:
+            with col:
 
                 st.markdown(f"## {name}")
 
