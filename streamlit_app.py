@@ -12,7 +12,7 @@ from xai.scorecam import ScoreCAM
 
 import gdown
 import os
-import matplotlib.pyplot as plt
+
 
 # ======================
 # CONFIG
@@ -112,7 +112,10 @@ def load_model(name):
 
     state_dict = load_model_from_url(url, file)
 
-    model.load_state_dict(state_dict)
+    if isinstance(state_dict, dict) and "state_dict" in state_dict:
+        state_dict = state_dict["state_dict"]
+
+    model.load_state_dict(state_dict, strict=False)
 
     remove_inplace_relu(model)
 
@@ -147,28 +150,6 @@ def get_target_layer(model, name):
 
         return model.features[-1]
 
-# ======================
-# CONFIDENCE GRAPH
-# ======================
-def show_confidence_graph(probs):
-
-    fig, ax = plt.subplots(figsize=(4, 2.5))
-
-    ax.bar(CLASS_NAMES, probs)
-
-    ax.set_ylim(0, 1)
-
-    ax.set_title("Confidence", fontsize=10)
-
-    ax.tick_params(axis='x', labelsize=8)
-
-    ax.tick_params(axis='y', labelsize=8)
-
-    plt.tight_layout()
-
-    st.pyplot(fig, use_container_width=False)
-
-    plt.close(fig)
 
 # ======================
 # GENERATE GRADCAM
@@ -314,7 +295,7 @@ if uploaded_file:
         selected_model_name = st.selectbox("Select Model", list(MODEL_NAME_MAP.keys()))
         model = load_model(selected_model_name)
         
-        if model:
+        if model is not None:
             # Prediction
             with torch.no_grad():
                 out = model(img_tensor)
@@ -346,7 +327,8 @@ if uploaded_file:
             except Exception as e:
                 st.error(f"XAI Generation Error: {e}")
             
-            show_confidence_graph(probs)
+            
+        
 
     else: # COMPARE ALL MODELS
         st.info("Comparing all models. This may take a moment...")
@@ -357,7 +339,8 @@ if uploaded_file:
             st.subheader(f"Model: {name}")
             
             model = load_model(name)
-            if not model: continue
+            if model is None:
+                continue
             
             # Prediction
             with torch.no_grad():
@@ -388,8 +371,7 @@ if uploaded_file:
             
             # Clean up memory after each model in comparison mode
             del model
-            if torch.cuda.is_available():
+            if DEVICE.type == "cuda":
                 torch.cuda.empty_cache()
-
 else:
     st.write("Please upload an MRI image (JPG/PNG) to begin.")
