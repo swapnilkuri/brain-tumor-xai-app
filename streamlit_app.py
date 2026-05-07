@@ -419,24 +419,25 @@ if uploaded_file:
         except Exception as e:
 
             st.warning(f"XAI failed: {e}")
-    # ==================================================
-    # COMPARE ALL MODELS
-    # ==================================================
-    else:
+   # ==================================================
+# COMPARE ALL MODELS
+# ==================================================
+else:
 
-        model_names = list(MODEL_NAME_MAP.keys())
+    model_names = list(MODEL_NAME_MAP.keys())
 
-        # 2-column responsive layout
-        cols = st.columns(2)
+    cols = st.columns(2)
 
-        for idx, name in enumerate(model_names):
+    for idx, name in enumerate(model_names):
 
-            col = cols[idx % 2]
+        col = cols[idx % 2]
 
-            model = load_model(name)
+        model = load_model(name)
 
-            if model is None:
-                continue
+        if model is None:
+            continue
+
+        try:
 
             with torch.no_grad():
 
@@ -461,67 +462,15 @@ if uploaded_file:
 
                 show_confidence_graph(probs)
 
-                try:
+        except Exception as e:
 
-                    # ======================
-                    # GRAD-CAM
-                    # ======================
-                    cam1 = generate_gradcam(
-                        model,
-                        img_tensor,
-                        MODEL_NAME_MAP[name]
-                    )
+            with col:
 
-                    overlay1 = overlay_heatmap(
-                        image,
-                        cam1
-                    )
+                st.error(
+                    f"{name} failed: {e}"
+                )
 
-                    st.image(
-                        overlay1,
-                        caption="Grad-CAM"
-                    )
+        # IMPORTANT MEMORY CLEANUP
+        del model
 
-                    # ======================
-                    # GRAD-CAM++
-                    # ======================
-                    cam2 = generate_gradcam_pp(
-                        model,
-                        img_tensor,
-                        MODEL_NAME_MAP[name]
-                    )
-
-                    overlay2 = overlay_heatmap(
-                        image,
-                        cam2
-                    )
-
-                    st.image(
-                        overlay2,
-                        caption="Grad-CAM++"
-                    )
-
-                    # ======================
-                    # SCORE-CAM
-                    # ======================
-                    cam3 = generate_scorecam(
-                        model,
-                        img_tensor,
-                        MODEL_NAME_MAP[name]
-                    )
-
-                    overlay3 = overlay_heatmap(
-                        image,
-                        cam3
-                    )
-
-                    st.image(
-                        overlay3,
-                        caption="Score-CAM"
-                    )
-
-                except Exception as e:
-
-                    st.warning(
-                        f"XAI failed: {e}"
-                    )
+        torch.cuda.empty_cache()
