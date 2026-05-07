@@ -1,17 +1,18 @@
 import streamlit as st
 import torch
-import torch.nn.functional as F
-import torchvision.transforms as transforms
-import torchvision.models as models
 import numpy as np
 import cv2
 from PIL import Image
-import matplotlib.pyplot as plt
+from torchvision import transforms
+from models.model_factory import get_model
 import gdown
 import os
+import matplotlib.pyplot as plt
 
-# ---------------- CONFIG ----------------
-st.set_page_config(page_title="Brain Tumor Classifier", layout="wide")
+# ======================
+# CONFIG
+# ======================
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 CLASS_NAMES = ["glioma", "meningioma", "pituitary"]
 
@@ -19,200 +20,312 @@ MODEL_NAME_MAP = {
     "DenseNet121": "densenet121",
     "ResNet50": "resnet50",
     "EfficientNet-B0": "efficientnet_b0",
-    "MobileNetV2": "mobilenet_v2"
+    "MobileNetV2": "mobilenet_v2",
+    "ConvNeXt-Tiny": "convnext_tiny",
 }
 
-MODEL_URLS = {
-    "densenet121": "https://drive.google.com/uc?id=12ASdxYOzN8IsHyAu2tfjETCsLFo-vNDz",
-    "resnet50": "https://drive.google.com/uc?id=1Enuecoe_TCrZJ3EUZVEGfwDohg8GqIMG",
-    "efficientnet_b0": "https://drive.google.com/uc?id=1iLPjoDgegFYLgxw6B3cD6Vnfd_iQdX07",
-    "mobilenet_v2": "https://drive.google.com/uc?id=1Em7OfSqZbpdjceVRtNG-Cn4kBvsdynT9"
+MODEL_PATHS = {
+    "DenseNet121": ("https://drive.google.com/uc?id=12ASdxYOzN8IsHyAu2tfjETCsLFo-vNDz", "densenet.pth"),
+    "ResNet50": ("https://drive.google.com/uc?id=1Enuecoe_TCrZJ3EUZVEGfwDohg8GqIMG", "resnet.pth"),
+    "EfficientNet-B0": ("https://drive.google.com/uc?id=1iLPjoDgegFYLgxw6B3cD6Vnfd_iQdX07", "efficientnet.pth"),
+    "MobileNetV2": ("https://drive.google.com/uc?id=1Em7OfSqZbpdjceVRtNG-Cn4kBvsdynT9", "mobilenet.pth"),
+
+    # LOCAL CONVNEXT MODEL
+    "ConvNeXt-Tiny": ("https://drive.google.com/uc?id=1H88X-CmdtVycmb1IzgNsy9kGG2Nt9WKj",
+        "convnext_tiny.pth"),
 }
 
-os.makedirs("models", exist_ok=True)
+# ======================
+# TRANSFORM
+# ======================
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406],
+                         [0.229, 0.224, 0.225])
+])
 
-# ---------------- DOWNLOAD ----------------
-def download_model(name):
-    path = f"models/{name}.pth"
-    if not os.path.exists(path):
-        gdown.download(MODEL_URLS[name], path, quiet=False)
-    return path
+# ======================
+# REMOVE INPLACE RELU
+# ======================
+def remove_inplace_relu(model):
+    for module in model.modules():
+        if isinstance(module, torch.nn.ReLU):
+            module.inplace = False
 
-# ---------------- MODEL ----------------
-def get_model(name):
-    if name == "densenet121":
-        model = models.densenet121(weights=None)
-        model.classifier = torch.nn.Linear(model.classifier.in_features, 3)
+# ======================
+# DOWNLOAD MODEL
+# ======================
+def load_model_from_url(url, filename):
 
-    elif name == "resnet50":
-        model = models.resnet50(weights=None)
-        model.fc = torch.nn.Linear(model.fc.in_features, 3)
+    if url is not None:
+        if not os.path.exists(filename):
+            gdown.download(url, filename, quiet=False)
 
-    elif name == "efficientnet_b0":
-        model = models.efficientnet_b0(weights=None)
-        model.classifier[1] = torch.nn.Linear(model.classifier[1].in_features, 3)
+    return torch.load(filename, map_location=DEVICE, weights_only=False)
 
-    elif name == "mobilenet_v2":
-        model = models.mobilenet_v2(weights=None)
-        model.classifier[1] = torch.nn.Linear(model.classifier[1].in_features, 3)
+# ======================
+# LOAD MODEL
+# ======================
+@st.cache_resource
+def load_model(name):
+
+    model_name = MODEL_NAME_MAP[name]
+
+    model = get_model(model_name, 3, pretrained=False)
+
+    url, file = MODEL_PATHS[name]
+
+    state_dict = load_model_from_url(url, file)
+
+    model.load_state_dict(state_dict)
+
+    remove_inplace_relu(model)
+
+    model.to(DEVICE)
+    model.eval()
 
     return model
 
-@st.cache_resource
-def load_model(name):
-    try:
-        path = download_model(name)
-        model = get_model(name)
-        model.load_state_dict(torch.load(path, map_location="cpu"))
-        model.eval()
-        return model
-    except:
-        return None
-
-# ---------------- PREPROCESS ----------------
-def preprocess(image):
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
-    ])
-    return transform(image).unsqueeze(0)
-
-# ---------------- PREDICT ----------------
-def predict(model, tensor):
-    with torch.no_grad():
-        out = model(tensor)
-        probs = F.softmax(out, dim=1).cpu().numpy()[0]
-    return probs
-
-# ---------------- TARGET LAYER ----------------
+# ======================
+# TARGET LAYER
+# ======================
 def get_target_layer(model, name):
+
     if name == "densenet121":
-        return model.features.denseblock4
+        return model.features[-1]
 
     elif name == "resnet50":
-        return model.layer4
+        return model.layer4[-1]
 
     elif name == "efficientnet_b0":
-        return model.features[-1][0]
+        return model.features[-1]
 
     elif name == "mobilenet_v2":
         return model.features[-1]
 
-# ---------------- GRAD CAM ----------------
+    elif name == "convnext_tiny":
+        return model.features[-1][-1]
+
+# ======================
+# GRAD-CAM
+# ======================
 def grad_cam(model, img_tensor, model_name):
 
-    model.eval()
     target_layer = get_target_layer(model, model_name)
 
-    activations = None
-    gradients = None
+    activations = []
+    gradients = []
 
-    def forward_hook(module, input, output):
-        nonlocal activations
-        activations = output
+    def forward_hook(module, inp, out):
+
+        activations.append(out.clone())
 
     def backward_hook(module, grad_input, grad_output):
-        nonlocal gradients
-        gradients = grad_output[0]
 
-    handle_f = target_layer.register_forward_hook(forward_hook)
-    handle_b = target_layer.register_full_backward_hook(backward_hook)
+        gradients.append(grad_output[0].clone())
 
-    try:
-        output = model(img_tensor)
-        class_idx = output.argmax(dim=1)
+    forward_handle = target_layer.register_forward_hook(forward_hook)
 
-        model.zero_grad()
-        output[0, class_idx].backward()
+    backward_handle = target_layer.register_full_backward_hook(
+        backward_hook
+    )
 
-        if activations is None or gradients is None:
-            return None
+    img_tensor = img_tensor.clone().detach().requires_grad_(True)
 
-        acts = activations.detach().cpu().numpy()[0]
-        grads = gradients.detach().cpu().numpy()[0]
+    output = model(img_tensor)
 
+    class_idx = output.argmax(dim=1)
+
+    score = output[:, class_idx]
+
+    model.zero_grad()
+
+    score.backward(retain_graph=True)
+
+    grads = gradients[0].detach().cpu().numpy()[0]
+    acts = activations[0].detach().cpu().numpy()[0]
+
+    # ConvNeXt special handling
+    if grads.ndim == 3:
         weights = np.mean(grads, axis=(1, 2))
-        cam = np.sum(weights[:, None, None] * acts, axis=0)
+        cam = np.zeros(acts.shape[1:], dtype=np.float32)
 
-        cam = np.maximum(cam, 0)
-        cam = cv2.resize(cam, (224, 224))
+        for i, w in enumerate(weights):
+            cam += w * acts[i]
 
-        cam = cam - cam.min()
-        cam = cam / (cam.max() + 1e-8)
+    else:
+        weights = np.mean(grads, axis=(0, 1))
+        cam = np.zeros(acts.shape[:2], dtype=np.float32)
 
-        return cam
+        for i, w in enumerate(weights):
+            cam += w * acts[:, :, i]
 
-    except:
-        return None
+    cam = np.maximum(cam, 0)
 
-    finally:
-        handle_f.remove()
-        handle_b.remove()
+    cam = cv2.resize(cam, (224, 224))
 
-# ---------------- UI ----------------
-st.title("Brain Tumor Classification with Explainability")
+    cam = cam - cam.min()
 
-img_file = st.file_uploader("Upload MRI", type=["jpg", "png"])
+    cam = cam / (cam.max() + 1e-8)
 
-mode = st.radio("Mode", ["Single Model", "Compare All Models"])
-selected = st.selectbox("Select Model", list(MODEL_NAME_MAP.keys()))
+    forward_handle.remove()
+    backward_handle.remove()
 
-if img_file:
-    image = Image.open(img_file).convert("RGB")
-    st.image(image, width=250)
+    return cam
 
-    tensor = preprocess(image)
+# ======================
+# CONFIDENCE GRAPH
+# ======================
+def show_confidence_graph(probs):
 
-    def run(ui_name, name):
+    fig, ax = plt.subplots(figsize=(4, 2.5))
 
-        model = load_model(name)
+    ax.bar(CLASS_NAMES, probs)
 
-        if model is None:
-            st.error(f"Model failed: {name}")
-            return
+    ax.set_ylim(0, 1)
 
-        probs = predict(model, tensor)
+    ax.set_title("Confidence", fontsize=10)
+
+    ax.tick_params(axis='x', labelsize=8)
+    ax.tick_params(axis='y', labelsize=8)
+
+    plt.tight_layout()
+
+    st.pyplot(fig, use_container_width=False)
+
+    plt.close(fig)
+
+# ======================
+# UI
+# ======================
+st.set_page_config(layout="wide")
+
+st.title("Brain Tumor Classification with Explainability & Robustness")
+
+uploaded_file = st.file_uploader(
+    "Upload MRI Image",
+    type=["png", "jpg", "jpeg"]
+)
+
+mode = st.radio(
+    "Mode",
+    ["Single Model", "Compare All Models"]
+)
+
+if uploaded_file:
+
+    image = Image.open(uploaded_file).convert("RGB")
+
+    st.image(image, caption="Input MRI", width=250)
+
+    img_tensor = transform(image).unsqueeze(0).to(DEVICE)
+
+    # ======================
+    # SINGLE MODEL
+    # ======================
+    if mode == "Single Model":
+
+        selected_model = st.selectbox(
+            "Select Model",
+            list(MODEL_NAME_MAP.keys())
+        )
+
+        model = load_model(selected_model)
+
+        with torch.no_grad():
+
+            out = model(img_tensor)
+
+            probs = torch.softmax(out, dim=1).cpu().numpy()[0]
+
         pred = CLASS_NAMES[np.argmax(probs)]
-        conf = np.max(probs)
 
-        st.subheader(f"{ui_name}: {pred}")
-        st.write(f"Confidence: {conf:.4f}")
+        st.subheader(f"{selected_model}: {pred}")
 
-        # -------- SMALL GRAPH --------
-        fig, ax = plt.subplots(figsize=(3,1.8))
-        ax.bar(CLASS_NAMES, probs)
-        ax.set_ylim(0,1)
-        ax.set_title("Confidence", fontsize=9)
-        ax.tick_params(axis='x', labelsize=7)
-        ax.tick_params(axis='y', labelsize=7)
+        st.write(f"Confidence: {np.max(probs):.4f}")
 
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close(fig)
+        show_confidence_graph(probs)
 
-        # -------- GRAD CAM --------
-        cam = grad_cam(model, tensor.clone(), name)
+        try:
 
-        if cam is not None:
-            heatmap = cv2.applyColorMap(np.uint8(255*cam), cv2.COLORMAP_JET)
+            cam = grad_cam(
+                model,
+                img_tensor,
+                MODEL_NAME_MAP[selected_model]
+            )
+
+            heatmap = cv2.applyColorMap(
+                np.uint8(255 * cam),
+                cv2.COLORMAP_JET
+            )
 
             overlay = cv2.addWeighted(
-                np.array(image.resize((224,224))),
-                0.7,
+                np.array(image.resize((224, 224))),
+                0.6,
                 heatmap,
-                0.3,
+                0.4,
                 0
             )
 
             st.image(overlay, caption="Grad-CAM")
-        else:
-            st.warning("Grad-CAM failed")
 
-    if mode == "Single Model":
-        run(selected, MODEL_NAME_MAP[selected])
+        except Exception as e:
+
+            st.warning(f"Grad-CAM failed: {e}")
+
+    # ======================
+    # COMPARE MODE
+    # ======================
     else:
-        cols = st.columns(4)
-        for i,(ui,name) in enumerate(MODEL_NAME_MAP.items()):
+
+        cols = st.columns(len(MODEL_NAME_MAP))
+
+        for i, name in enumerate(MODEL_NAME_MAP.keys()):
+
+            model = load_model(name)
+
+            with torch.no_grad():
+
+                out = model(img_tensor)
+
+                probs = torch.softmax(out, dim=1).cpu().numpy()[0]
+
+            pred = CLASS_NAMES[np.argmax(probs)]
+
             with cols[i]:
-                run(ui, name)
+
+                st.markdown(f"### {name}")
+
+                st.write(pred)
+
+                st.write(f"Confidence: {np.max(probs):.4f}")
+
+                show_confidence_graph(probs)
+
+                try:
+
+                    cam = grad_cam(
+                        model,
+                        img_tensor,
+                        MODEL_NAME_MAP[name]
+                    )
+
+                    heatmap = cv2.applyColorMap(
+                        np.uint8(255 * cam),
+                        cv2.COLORMAP_JET
+                    )
+
+                    overlay = cv2.addWeighted(
+                        np.array(image.resize((224, 224))),
+                        0.6,
+                        heatmap,
+                        0.4,
+                        0
+                    )
+
+                    st.image(overlay, caption="Grad-CAM")
+
+                except Exception as e:
+
+                    st.warning(f"Grad-CAM failed: {e}")
