@@ -100,56 +100,27 @@ def load_model_from_url(url, filename):
 @st.cache_resource
 def load_model(name):
 
-    try:
+    model_name = MODEL_NAME_MAP[name]
 
-        model_name = MODEL_NAME_MAP[name]
+    model = get_model(
+        model_name,
+        3,
+        pretrained=False
+    )
 
-        model = get_model(
-            model_name,
-            3,
-            pretrained=False
-        )
+    url, file = MODEL_PATHS[name]
 
-        url, file = MODEL_PATHS[name]
+    state_dict = load_model_from_url(url, file)
 
-        # Download if missing
-        if not os.path.exists(file):
+    model.load_state_dict(state_dict)
 
-            gdown.download(
-                url,
-                file,
-                quiet=False
-            )
+    remove_inplace_relu(model)
 
-        # Load checkpoint safely
-        checkpoint = torch.load(
-            file,
-            map_location=DEVICE
-        )
+    model.to(DEVICE)
 
-        # Handle state_dict wrapper
-        if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+    model.eval()
 
-            checkpoint = checkpoint["state_dict"]
-
-        model.load_state_dict(
-            checkpoint,
-            strict=False
-        )
-
-        remove_inplace_relu(model)
-
-        model.to(DEVICE)
-
-        model.eval()
-
-        return model
-
-    except Exception as e:
-
-        st.error(f"Failed loading {name}: {e}")
-
-        return None
+    return model
 
 # ======================
 # TARGET LAYER
@@ -326,88 +297,99 @@ mode = st.radio(
     ["Single Model", "Compare All Models"]
 )
 
+# ... (Keep all your imports and configuration dictionaries as they are) ...
+
 # ======================
-# MAIN
+# UPDATED MAIN LOGIC
 # ======================
 if uploaded_file:
-    # 1. Process the image first so img_tensor exists for ALL modes
+    # 1. Process image once at the start
     image = Image.open(uploaded_file).convert("RGB")
     img_tensor = transform(image).unsqueeze(0).to(DEVICE)
 
-    st.image(
-        image, 
-        caption="Input MRI", 
-        width=180
-    )
+    # Display the original image
+    st.sidebar.image(image, caption="Uploaded MRI", use_container_width=True)
 
-    # 2. Handle the "Single Model" logic
     if mode == "Single Model":
-        selected_model = st.selectbox(
-            "Select Model",
-            list(MODEL_NAME_MAP.keys())
-        )
-
-        model = load_model(selected_model)
-        if model is not None:
+        selected_model_name = st.selectbox("Select Model", list(MODEL_NAME_MAP.keys()))
+        model = load_model(selected_model_name)
+        
+        if model:
+            # Prediction
             with torch.no_grad():
                 out = model(img_tensor)
                 probs = torch.softmax(out, dim=1).cpu().numpy()[0]
-
-            pred = CLASS_NAMES[np.argmax(probs)]
-            st.subheader(f"{selected_model}: {pred}")
-            st.write(f"Confidence: {np.max(probs):.4f}")
+            
+            pred_idx = np.argmax(probs)
+            st.header(f"Result: {CLASS_NAMES[pred_idx]}")
+            st.write(f"Confidence: **{probs[pred_idx]:.2%}**")
+            
+            # Layout for XAI
+            col1, col2, col3 = st.columns(3)
+            
+            try:
+                # Grad-CAM
+                with col1:
+                    cam1 = generate_gradcam(model, img_tensor, MODEL_NAME_MAP[selected_model_name])
+                    st.image(overlay_heatmap(image, cam1), caption="Grad-CAM")
+                
+                # Grad-CAM++
+                with col2:
+                    cam2 = generate_gradcam_pp(model, img_tensor, MODEL_NAME_MAP[selected_model_name])
+                    st.image(overlay_heatmap(image, cam2), caption="Grad-CAM++")
+                
+                # Score-CAM
+                with col3:
+                    cam3 = generate_scorecam(model, img_tensor, MODEL_NAME_MAP[selected_model_name])
+                    st.image(overlay_heatmap(image, cam3), caption="Score-CAM")
+                    
+            except Exception as e:
+                st.error(f"XAI Generation Error: {e}")
+            
             show_confidence_graph(probs)
 
-            try:
-                # XAI Visualizations
-                cam1 = generate_gradcam(model, img_tensor, MODEL_NAME_MAP[selected_model])
-                overlay1 = overlay_heatmap(image, cam1)
-                st.image(overlay1, caption="Grad-CAM")
-
-                cam2 = generate_gradcam_pp(model, img_tensor, MODEL_NAME_MAP[selected_model])
-                overlay2 = overlay_heatmap(image, cam2)
-                st.image(overlay2, caption="Grad-CAM++")
-
-                cam3 = generate_scorecam(model, img_tensor, MODEL_NAME_MAP[selected_model])
-                overlay3 = overlay_heatmap(image, cam3)
-                st.image(overlay3, caption="Score-CAM")
-            except Exception as e:
-                st.warning(f"XAI failed: {e}")
-
-    # 3. Handle the "Compare All Models" logic (Indented inside the uploaded_file check)
-    elif mode == "Compare All Models":
-        model_names = list(MODEL_NAME_MAP.keys())
-        cols = st.columns(2)
-
-        for idx, name in enumerate(model_names):
-            col = cols[idx % 2]
-            model = load_model(name)
+    else: # COMPARE ALL MODELS
+        st.info("Comparing all models. This may take a moment...")
+        
+        # We use a grid for comparison
+        for name in MODEL_NAME_MAP.keys():
+            st.divider()
+            st.subheader(f"Model: {name}")
             
-            if model is None:
-                continue
-
+            model = load_model(name)
+            if not model: continue
+            
+            # Prediction
+            with torch.no_grad():
+                out = model(img_tensor)
+                probs = torch.softmax(out, dim=1).cpu().numpy()[0]
+            
+            pred_idx = np.argmax(probs)
+            
+            # Display results in columns
+            res_col, cam_col1, cam_col2, cam_col3 = st.columns([1, 2, 2, 2])
+            
+            with res_col:
+                st.metric("Prediction", CLASS_NAMES[pred_idx])
+                st.metric("Confidence", f"{probs[pred_idx]:.2%}")
+                
             try:
-                with torch.no_grad():
-                    out = model(img_tensor)
-                    probs = torch.softmax(out, dim=1).cpu().numpy()[0]
-
-                pred = CLASS_NAMES[np.argmax(probs)]
-
-                with col:
-                    st.markdown(f"### {name}")
-                    st.write(f"**Prediction:** {pred}")
-                    st.write(f"**Confidence:** {np.max(probs):.4f}")
-                    show_confidence_graph(probs)
-                    st.divider()
-
+                with cam_col1:
+                    c1 = generate_gradcam(model, img_tensor, MODEL_NAME_MAP[name])
+                    st.image(overlay_heatmap(image, c1), caption="Grad-CAM")
+                with cam_col2:
+                    c2 = generate_gradcam_pp(model, img_tensor, MODEL_NAME_MAP[name])
+                    st.image(overlay_heatmap(image, c2), caption="Grad-CAM++")
+                with cam_col3:
+                    c3 = generate_scorecam(model, img_tensor, MODEL_NAME_MAP[name])
+                    st.image(overlay_heatmap(image, c3), caption="Score-CAM")
             except Exception as e:
-                with col:
-                    st.error(f"{name} failed: {e}")
-
-            # Cleanup
+                st.warning(f"Interpretability failed for {name}: {e}")
+            
+            # Clean up memory after each model in comparison mode
             del model
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
 else:
-    st.info("Please upload an MRI image to begin the classification.")
+    st.write("Please upload an MRI image (JPG/PNG) to begin.")
