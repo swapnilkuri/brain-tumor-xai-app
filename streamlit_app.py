@@ -13,7 +13,6 @@ from xai.scorecam import ScoreCAM
 import gdown
 import os
 
-
 # ======================
 # CONFIG
 # ======================
@@ -150,7 +149,6 @@ def get_target_layer(model, name):
 
         return model.features[-1]
 
-
 # ======================
 # GENERATE GRADCAM
 # ======================
@@ -234,7 +232,6 @@ def overlay_heatmap(image, cam):
 
     heatmap = heatmap.astype(np.uint8)
 
-    # IMPORTANT FIX
     if len(image_np.shape) == 2:
 
         image_np = cv2.cvtColor(
@@ -278,100 +275,228 @@ mode = st.radio(
     ["Single Model", "Compare All Models"]
 )
 
-# ... (Keep all your imports and configuration dictionaries as they are) ...
-
 # ======================
-# UPDATED MAIN LOGIC
+# MAIN APP
 # ======================
 if uploaded_file:
-    # 1. Process image once at the start
+
     image = Image.open(uploaded_file).convert("RGB")
+
     img_tensor = transform(image).unsqueeze(0).to(DEVICE)
 
-    # Display the original image
-    st.sidebar.image(image, caption="Uploaded MRI", use_container_width=True)
+    st.sidebar.image(
+        image,
+        caption="Uploaded MRI",
+        use_container_width=True
+    )
 
+    # ======================
+    # SINGLE MODEL
+    # ======================
     if mode == "Single Model":
-        selected_model_name = st.selectbox("Select Model", list(MODEL_NAME_MAP.keys()))
-        model = load_model(selected_model_name)
-        
-        if model is not None:
-            # Prediction
-            with torch.no_grad():
-                out = model(img_tensor)
-                probs = torch.softmax(out, dim=1).cpu().numpy()[0]
-            
-            pred_idx = np.argmax(probs)
-            st.header(f"Result: {CLASS_NAMES[pred_idx]}")
-            st.write(f"Confidence: **{probs[pred_idx]:.2%}**")
-            
-            # Layout for XAI
-            col1, col2, col3 = st.columns(3)
-            
-            try:
-                # Grad-CAM
-                with col1:
-                    cam1 = generate_gradcam(model, img_tensor, MODEL_NAME_MAP[selected_model_name])
-                    st.image(overlay_heatmap(image, cam1), caption="Grad-CAM")
-                
-                # Grad-CAM++
-                with col2:
-                    cam2 = generate_gradcam_pp(model, img_tensor, MODEL_NAME_MAP[selected_model_name])
-                    st.image(overlay_heatmap(image, cam2), caption="Grad-CAM++")
-                
-                # Score-CAM
-                with col3:
-                    cam3 = generate_scorecam(model, img_tensor, MODEL_NAME_MAP[selected_model_name])
-                    st.image(overlay_heatmap(image, cam3), caption="Score-CAM")
-                    
-            except Exception as e:
-                st.error(f"XAI Generation Error: {e}")
-            
-            
-        
 
-    else: # COMPARE ALL MODELS
-        st.info("Comparing all models. This may take a moment...")
-        
-        # We use a grid for comparison
-        for name in MODEL_NAME_MAP.keys():
-            st.divider()
-            st.subheader(f"Model: {name}")
-            
-            model = load_model(name)
-            if model is None:
-                continue
-            
-            # Prediction
-            with torch.no_grad():
-                out = model(img_tensor)
-                probs = torch.softmax(out, dim=1).cpu().numpy()[0]
-            
-            pred_idx = np.argmax(probs)
-            
-            # Display results in columns
-            res_col, cam_col1, cam_col2, cam_col3 = st.columns([1, 2, 2, 2])
-            
-            with res_col:
-                st.metric("Prediction", CLASS_NAMES[pred_idx])
-                st.metric("Confidence", f"{probs[pred_idx]:.2%}")
-                
+        selected_model_name = st.selectbox(
+            "Select Model",
+            list(MODEL_NAME_MAP.keys())
+        )
+
+        model = load_model(selected_model_name)
+
+        with torch.no_grad():
+
+            out = model(img_tensor)
+
+            probs = torch.softmax(out, dim=1)
+
+            conf, pred = torch.max(probs, 1)
+
+            confidence = conf.item()
+
+            pred_idx = pred.item()
+
+        THRESHOLD = 0.70
+
+        if confidence < THRESHOLD:
+
+            st.error("Unknown / Invalid MRI Image")
+
+            st.warning(
+                "The uploaded image does not match the trained tumor classes."
+            )
+
+        else:
+
+            st.header(
+                f"Result: {CLASS_NAMES[pred_idx]}"
+            )
+
+            st.write(
+                f"Confidence: **{confidence:.2%}**"
+            )
+
+            col1, col2, col3 = st.columns(3)
+
             try:
-                with cam_col1:
-                    c1 = generate_gradcam(model, img_tensor, MODEL_NAME_MAP[name])
-                    st.image(overlay_heatmap(image, c1), caption="Grad-CAM")
-                with cam_col2:
-                    c2 = generate_gradcam_pp(model, img_tensor, MODEL_NAME_MAP[name])
-                    st.image(overlay_heatmap(image, c2), caption="Grad-CAM++")
-                with cam_col3:
-                    c3 = generate_scorecam(model, img_tensor, MODEL_NAME_MAP[name])
-                    st.image(overlay_heatmap(image, c3), caption="Score-CAM")
+
+                with col1:
+
+                    cam1 = generate_gradcam(
+                        model,
+                        img_tensor,
+                        MODEL_NAME_MAP[selected_model_name]
+                    )
+
+                    st.image(
+                        overlay_heatmap(image, cam1),
+                        caption="Grad-CAM"
+                    )
+
+                with col2:
+
+                    cam2 = generate_gradcam_pp(
+                        model,
+                        img_tensor,
+                        MODEL_NAME_MAP[selected_model_name]
+                    )
+
+                    st.image(
+                        overlay_heatmap(image, cam2),
+                        caption="Grad-CAM++"
+                    )
+
+                with col3:
+
+                    cam3 = generate_scorecam(
+                        model,
+                        img_tensor,
+                        MODEL_NAME_MAP[selected_model_name]
+                    )
+
+                    st.image(
+                        overlay_heatmap(image, cam3),
+                        caption="Score-CAM"
+                    )
+
             except Exception as e:
-                st.warning(f"Interpretability failed for {name}: {e}")
-            
-            # Clean up memory after each model in comparison mode
+
+                st.error(
+                    f"XAI Generation Error: {e}"
+                )
+
+    # ======================
+    # COMPARE ALL MODELS
+    # ======================
+    else:
+
+        st.info(
+            "Comparing all models. This may take a moment..."
+        )
+
+        THRESHOLD = 0.70
+
+        for name in MODEL_NAME_MAP.keys():
+
+            st.divider()
+
+            st.subheader(f"Model: {name}")
+
+            model = load_model(name)
+
+            with torch.no_grad():
+
+                out = model(img_tensor)
+
+                probs = torch.softmax(out, dim=1)
+
+                conf, pred = torch.max(probs, 1)
+
+                confidence = conf.item()
+
+                pred_idx = pred.item()
+
+            res_col, cam_col1, cam_col2, cam_col3 = st.columns(
+                [1, 2, 2, 2]
+            )
+
+            with res_col:
+
+                if confidence < THRESHOLD:
+
+                    st.error("Invalid MRI")
+
+                    st.write(
+                        f"Low Confidence: {confidence:.2%}"
+                    )
+
+                else:
+
+                    st.metric(
+                        "Prediction",
+                        CLASS_NAMES[pred_idx]
+                    )
+
+                    st.metric(
+                        "Confidence",
+                        f"{confidence:.2%}"
+                    )
+
+            if confidence >= THRESHOLD:
+
+                try:
+
+                    with cam_col1:
+
+                        c1 = generate_gradcam(
+                            model,
+                            img_tensor,
+                            MODEL_NAME_MAP[name]
+                        )
+
+                        st.image(
+                            overlay_heatmap(image, c1),
+                            caption="Grad-CAM"
+                        )
+
+                    with cam_col2:
+
+                        c2 = generate_gradcam_pp(
+                            model,
+                            img_tensor,
+                            MODEL_NAME_MAP[name]
+                        )
+
+                        st.image(
+                            overlay_heatmap(image, c2),
+                            caption="Grad-CAM++"
+                        )
+
+                    with cam_col3:
+
+                        c3 = generate_scorecam(
+                            model,
+                            img_tensor,
+                            MODEL_NAME_MAP[name]
+                        )
+
+                        st.image(
+                            overlay_heatmap(image, c3),
+                            caption="Score-CAM"
+                        )
+
+                except Exception as e:
+
+                    st.warning(
+                        f"Interpretability failed for {name}: {e}"
+                    )
+
             del model
+
             if DEVICE.type == "cuda":
+
                 torch.cuda.empty_cache()
+
 else:
-    st.write("Please upload an MRI image (JPG/PNG) to begin.")
+
+    st.write(
+        "Please upload an MRI image (JPG/PNG) to begin."
+    )
