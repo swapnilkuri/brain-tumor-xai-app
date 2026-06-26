@@ -1,31 +1,47 @@
-import streamlit as st
+import os
 import torch
-import torch.nn as nn
-import numpy as np
-import cv2
+import torch.nn.functional as F
+import streamlit as st
 from PIL import Image
 from torchvision import transforms
-from models.model_factory import get_model
+import gdown
+import cv2
+import numpy as np
+
 from xai.gradcam import GradCAM
+from models.model_factory import get_model
 from xai.gradcam_plus_plus import GradCAMPlusPlus
 from xai.scorecam import ScoreCAM
 
-import gdown
-import os
-
-# ======================
-# CONFIG
-# ======================
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-CLASS_NAMES = ["glioma", "meningioma", "pituitary"]
+CLASS_NAMES = [
+    "glioma",
+    "meningioma",
+    "pituitary"
+]
+
+def get_target_layer(model, model_name):
+
+    if model_name == "convnext_tiny":
+        return model.features[-2]
+
+    elif model_name == "densenet121":
+        return model.features[-1]
+
+    elif model_name == "resnet50":
+        return model.layer4[-1]
+
+    else:
+        raise ValueError(model_name)
+    
+
+    
 
 MODEL_NAME_MAP = {
     "ConvNeXt-Tiny": "convnext_tiny",
     "DenseNet121": "densenet121",
     "ResNet50": "resnet50",
-    "EfficientNet-B0": "efficientnet_b0",
-    "MobileNetV2": "mobilenet_v2",
 }
 
 MODEL_PATHS = {
@@ -42,49 +58,52 @@ MODEL_PATHS = {
     "ResNet50": (
         "https://drive.google.com/uc?id=1Enuecoe_TCrZJ3EUZVEGfwDohg8GqIMG",
         "resnet.pth"
-    ),
-
-    "EfficientNet-B0": (
-        "https://drive.google.com/uc?id=1iLPjoDgegFYLgxw6B3cD6Vnfd_iQdX07",
-        "efficientnet.pth"
-    ),
-
-    "MobileNetV2": (
-        "https://drive.google.com/uc?id=1Em7OfSqZbpdjceVRtNG-Cn4kBvsdynT9",
-        "mobilenet.pth"
-    ),
+    )
 }
 
-# ======================
-# IMAGE TRANSFORM
-# ======================
 transform = transforms.Compose([
-    transforms.Resize((224, 224)),
+    transforms.Resize((224,224)),
     transforms.ToTensor(),
     transforms.Normalize(
-        [0.485, 0.456, 0.406],
-        [0.229, 0.224, 0.225]
+        mean=[0.485,0.456,0.406],
+        std=[0.229,0.224,0.225]
     )
 ])
 
-# ======================
-# REMOVE INPLACE RELU
-# ======================
-def remove_inplace_relu(model):
 
-    for module in model.modules():
+@st.cache_resource
+def load_single_model(model_title):
 
-        if isinstance(module, nn.ReLU):
+    model_name = MODEL_NAME_MAP[model_title]
 
-            module.inplace = False
+    model = get_model(
+        model_name,
+        num_classes=3,
+        pretrained=False
+    )
 
-# ======================
-# DOWNLOAD MODEL
-# ======================
+    url, filename = MODEL_PATHS[model_title]
+
+    state_dict = load_model_from_url(url,filename)
+
+    if isinstance(state_dict, dict) and "state_dict" in state_dict:
+        state_dict = state_dict["state_dict"]
+
+    model.load_state_dict(
+        state_dict,
+        strict=False
+    )
+
+    model.to(DEVICE)
+
+    model.eval()
+
+    return model
+
+
 def load_model_from_url(url, filename):
 
     if not os.path.exists(filename):
-
         gdown.download(url, filename, quiet=False)
 
     return torch.load(
@@ -93,161 +112,122 @@ def load_model_from_url(url, filename):
         weights_only=False
     )
 
-# ======================
-# LOAD MODEL
-# ======================
 @st.cache_resource
-def load_model(name):
+def load_models():
 
-    model_name = MODEL_NAME_MAP[name]
+    return {
 
-    model = get_model(
-        model_name,
-        3,
-        pretrained=False
+        "convnext_tiny":
+            load_single_model("ConvNeXt-Tiny"),
+
+        "densenet121":
+            load_single_model("DenseNet121"),
+
+        "resnet50":
+            load_single_model("ResNet50")
+    }
+
+def ensemble_predict(models, img_tensor):
+
+    probs = []
+
+    with torch.no_grad():
+
+        for model in models.values():
+
+            output = model(img_tensor)
+
+            probs.append(
+                F.softmax(output, dim=1)
+            )
+
+    avg_prob = torch.mean(
+        torch.stack(probs),
+        dim=0
     )
 
-    url, file = MODEL_PATHS[name]
-
-    state_dict = load_model_from_url(url, file)
-
-    if isinstance(state_dict, dict) and "state_dict" in state_dict:
-        state_dict = state_dict["state_dict"]
-
-    model.load_state_dict(state_dict, strict=False)
-
-    remove_inplace_relu(model)
-
-    model.to(DEVICE)
-
-    model.eval()
-
-    return model
-
-# ======================
-# TARGET LAYER
-# ======================
-def get_target_layer(model, name):
-
-    if name == "convnext_tiny":
-
-        return model.features[-1]
-
-    elif name == "densenet121":
-
-        return model.features[-1]
-
-    elif name == "resnet50":
-
-        return model.layer4[-1]
-
-    elif name == "efficientnet_b0":
-
-        return model.features[-1]
-
-    elif name == "mobilenet_v2":
-
-        return model.features[-1]
-
-# ======================
-# GENERATE GRADCAM
-# ======================
-def generate_gradcam(model, img_tensor, model_name):
-
-    target_layer = get_target_layer(
-        model,
-        model_name
+    confidence, prediction = torch.max(
+        avg_prob,
+        dim=1
     )
 
-    gradcam = GradCAM(
-        model,
-        target_layer
+    return (
+        prediction.item(),
+        confidence.item()
     )
 
-    cam = gradcam.generate(img_tensor)
+def ensemble_gradcampp(image, img_tensor, models):
 
-    return cam
+    cams = []
 
-# ======================
-# GENERATE GRADCAM++
-# ======================
-def generate_gradcam_pp(model, img_tensor, model_name):
+    for model_name, model in models.items():
 
-    target_layer = get_target_layer(
-        model,
-        model_name
+        target_layer = get_target_layer(
+            model,
+            model_name
+        )
+
+        gradcampp = GradCAMPlusPlus(
+            model,
+            target_layer
+        )
+
+        cam = gradcampp.generate(img_tensor)
+
+        cams.append(cam)
+
+    ensemble_cam = np.mean(cams, axis=0)
+
+    return overlay_heatmap(
+        image,
+        ensemble_cam
     )
 
-    gradcam_pp = GradCAMPlusPlus(
-        model,
-        target_layer
+def ensemble_scorecam(image, img_tensor, models):
+
+    cams = []
+
+    for model_name, model in models.items():
+
+        target_layer = get_target_layer(
+            model,
+            model_name
+        )
+
+        scorecam = ScoreCAM(
+            model,
+            target_layer
+        )
+
+        cam = scorecam.generate(img_tensor)
+
+        cams.append(cam)
+
+    ensemble_cam = np.mean(cams, axis=0)
+
+    return overlay_heatmap(
+        image,
+        ensemble_cam
     )
 
-    cam = gradcam_pp.generate(img_tensor)
-
-    return cam
-
-# ======================
-# GENERATE SCORECAM
-# ======================
-def generate_scorecam(model, img_tensor, model_name):
-
-    target_layer = get_target_layer(
-        model,
-        model_name
-    )
-
-    scorecam = ScoreCAM(
-        model,
-        target_layer
-    )
-
-    cam = scorecam.generate(img_tensor)
-
-    return cam
-
-# ======================
-# OVERLAY HEATMAP
-# ======================
 def overlay_heatmap(image, cam):
+
+    image = np.array(image.resize((224, 224)))
 
     cam = cv2.resize(cam, (224, 224))
 
-    cam = cam - np.min(cam)
-
-    cam = cam / (np.max(cam) + 1e-8)
-
-    heatmap = np.uint8(255 * cam)
-
     heatmap = cv2.applyColorMap(
-        heatmap,
+        np.uint8(cam * 255),
         cv2.COLORMAP_JET
     )
 
-    image_np = np.array(
-        image.resize((224, 224))
+    heatmap = cv2.cvtColor(
+        heatmap,
+        cv2.COLOR_BGR2RGB
     )
 
-    image_np = image_np.astype(np.uint8)
-
-    heatmap = heatmap.astype(np.uint8)
-
-    if len(image_np.shape) == 2:
-
-        image_np = cv2.cvtColor(
-            image_np,
-            cv2.COLOR_GRAY2RGB
-        )
-
-    if image_np.shape[2] == 4:
-
-        image_np = cv2.cvtColor(
-            image_np,
-            cv2.COLOR_RGBA2RGB
-        )
-
     overlay = cv2.addWeighted(
-        image_np,
+        image,
         0.6,
         heatmap,
         0.4,
@@ -256,247 +236,123 @@ def overlay_heatmap(image, cam):
 
     return overlay
 
-# ======================
-# UI
-# ======================
+
+def ensemble_gradcam(image, img_tensor, models):
+
+    cams = []
+
+    for model_name, model in models.items():
+
+        target_layer = get_target_layer(
+            model,
+            model_name
+        )
+
+        gradcam = GradCAM(
+            model,
+            target_layer
+        )
+
+        cam = gradcam.generate(img_tensor)
+
+        cams.append(cam)
+
+    ensemble_cam = np.mean(cams, axis=0)
+
+    return overlay_heatmap(
+        image,
+        ensemble_cam
+    )
+
 st.set_page_config(layout="wide")
 
-st.title(
-    "Brain Tumor Classification with Explainability & Robustness"
-)
+st.title("Brain Tumor Classification using Deep Learning Soft Voting Ensemble")
 
-uploaded_file = st.file_uploader(
+uploaded = st.file_uploader(
     "Upload MRI Image",
-    type=["png", "jpg", "jpeg"]
+    type=["jpg","jpeg","png"]
 )
 
-mode = st.radio(
-    "Mode",
-    ["Single Model", "Compare All Models"]
-)
+if uploaded:
 
-# ======================
-# MAIN APP
-# ======================
-if uploaded_file:
+    image = Image.open(uploaded).convert("RGB")
 
-    image = Image.open(uploaded_file).convert("RGB")
+    st.image(
+        image,
+        caption="Uploaded MRI",
+        width=350
+    )
 
     img_tensor = transform(image).unsqueeze(0).to(DEVICE)
 
-    st.sidebar.image(
-        image,
-        caption="Uploaded MRI",
+    with st.spinner("Loading ensemble..."):
+
+        models = load_models()
+
+        pred, conf = ensemble_predict(
+            models,
+            img_tensor
+        )
+        CONFIDENCE_THRESHOLD = 0.70
+
+if conf < CONFIDENCE_THRESHOLD:
+
+    st.error(
+        "Unknown MRI image.\n\nConfidence is too low."
+    )
+
+    st.stop()
+    st.success("Model : Soft Voting Ensemble")
+
+    st.metric(
+        "Prediction",
+        CLASS_NAMES[pred]
+    )
+
+    st.metric(
+        "Confidence",
+        f"{conf*100:.2f}%"
+    )
+
+    st.subheader("Explainability")
+
+gradcam_img = ensemble_gradcam(
+    image,
+    img_tensor,
+    models
+)
+
+gradcampp_img = ensemble_gradcampp(
+    image,
+    img_tensor,
+    models
+)
+
+scorecam_img = ensemble_scorecam(
+    image,
+    img_tensor,
+    models
+)
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.image(
+        gradcam_img,
+        caption="Grad-CAM",
         use_container_width=True
     )
 
-    # ======================
-    # SINGLE MODEL
-    # ======================
-    if mode == "Single Model":
-
-        selected_model_name = st.selectbox(
-            "Select Model",
-            list(MODEL_NAME_MAP.keys())
-        )
-
-        model = load_model(selected_model_name)
-
-        with torch.no_grad():
-
-            out = model(img_tensor)
-
-            probs = torch.softmax(out, dim=1)
-
-            conf, pred = torch.max(probs, 1)
-
-            confidence = conf.item()
-
-            pred_idx = pred.item()
-
-        THRESHOLD = 0.70
-
-        if confidence < THRESHOLD:
-
-            st.error("Unknown / Invalid MRI Image")
-
-            st.warning(
-                "The uploaded image does not match the trained tumor classes."
-            )
-
-        else:
-
-            st.header(
-                f"Result: {CLASS_NAMES[pred_idx]}"
-            )
-
-            st.write(
-                f"Confidence: **{confidence:.2%}**"
-            )
-
-            col1, col2, col3 = st.columns(3)
-
-            try:
-
-                with col1:
-
-                    cam1 = generate_gradcam(
-                        model,
-                        img_tensor,
-                        MODEL_NAME_MAP[selected_model_name]
-                    )
-
-                    st.image(
-                        overlay_heatmap(image, cam1),
-                        caption="Grad-CAM"
-                    )
-
-                with col2:
-
-                    cam2 = generate_gradcam_pp(
-                        model,
-                        img_tensor,
-                        MODEL_NAME_MAP[selected_model_name]
-                    )
-
-                    st.image(
-                        overlay_heatmap(image, cam2),
-                        caption="Grad-CAM++"
-                    )
-
-                with col3:
-
-                    cam3 = generate_scorecam(
-                        model,
-                        img_tensor,
-                        MODEL_NAME_MAP[selected_model_name]
-                    )
-
-                    st.image(
-                        overlay_heatmap(image, cam3),
-                        caption="Score-CAM"
-                    )
-
-            except Exception as e:
-
-                st.error(
-                    f"XAI Generation Error: {e}"
-                )
-
-    # ======================
-    # COMPARE ALL MODELS
-    # ======================
-    else:
-
-        st.info(
-            "Comparing all models. This may take a moment..."
-        )
-
-        THRESHOLD = 0.70
-
-        for name in MODEL_NAME_MAP.keys():
-
-            st.divider()
-
-            st.subheader(f"Model: {name}")
-
-            model = load_model(name)
-
-            with torch.no_grad():
-
-                out = model(img_tensor)
-
-                probs = torch.softmax(out, dim=1)
-
-                conf, pred = torch.max(probs, 1)
-
-                confidence = conf.item()
-
-                pred_idx = pred.item()
-
-            res_col, cam_col1, cam_col2, cam_col3 = st.columns(
-                [1, 2, 2, 2]
-            )
-
-            with res_col:
-
-                if confidence < THRESHOLD:
-
-                    st.error("Invalid MRI")
-
-                    st.write(
-                        f"Low Confidence: {confidence:.2%}"
-                    )
-
-                else:
-
-                    st.metric(
-                        "Prediction",
-                        CLASS_NAMES[pred_idx]
-                    )
-
-                    st.metric(
-                        "Confidence",
-                        f"{confidence:.2%}"
-                    )
-
-            if confidence >= THRESHOLD:
-
-                try:
-
-                    with cam_col1:
-
-                        c1 = generate_gradcam(
-                            model,
-                            img_tensor,
-                            MODEL_NAME_MAP[name]
-                        )
-
-                        st.image(
-                            overlay_heatmap(image, c1),
-                            caption="Grad-CAM"
-                        )
-
-                    with cam_col2:
-
-                        c2 = generate_gradcam_pp(
-                            model,
-                            img_tensor,
-                            MODEL_NAME_MAP[name]
-                        )
-
-                        st.image(
-                            overlay_heatmap(image, c2),
-                            caption="Grad-CAM++"
-                        )
-
-                    with cam_col3:
-
-                        c3 = generate_scorecam(
-                            model,
-                            img_tensor,
-                            MODEL_NAME_MAP[name]
-                        )
-
-                        st.image(
-                            overlay_heatmap(image, c3),
-                            caption="Score-CAM"
-                        )
-
-                except Exception as e:
-
-                    st.warning(
-                        f"Interpretability failed for {name}: {e}"
-                    )
-
-            del model
-
-            if DEVICE.type == "cuda":
-
-                torch.cuda.empty_cache()
-
-else:
-
-    st.write(
-        "Please upload an MRI image (JPG/PNG) to begin."
+with col2:
+    st.image(
+        gradcampp_img,
+        caption="Grad-CAM++",
+        use_container_width=True
+    )
+
+with col3:
+    st.image(
+        scorecam_img,
+        caption="Score-CAM",
+        use_container_width=True
     )
