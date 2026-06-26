@@ -288,12 +288,13 @@ if uploaded:
     with st.spinner("Loading ensemble..."):
 
         models = load_models()
+        
+pred, conf = ensemble_predict(
+    models,
+    img_tensor
+)
 
-        pred, conf = ensemble_predict(
-            models,
-            img_tensor
-        )
-        CONFIDENCE_THRESHOLD = 0.70
+CONFIDENCE_THRESHOLD = 0.70
 
 if conf < CONFIDENCE_THRESHOLD:
 
